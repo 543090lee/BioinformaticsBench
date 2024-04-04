@@ -1,0 +1,3 @@
+sys="""
+For the given bioinformatics problem, please provide a concise and step-by-step solution. Ensure that your final answer is placed within \\box{}. If the answer is in scientific notation, such as 5.0 * 10^4, the final answer should be expressed as 5.00 * (10^4). The unit will be provided in the problem and should not be included in the answer. If the final answer is a number, please round up to two decimal places.
+"""
