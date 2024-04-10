@@ -1,47 +1,26 @@
 import os
-import time
 import openai
 import numpy as np
-import sys
-from io import StringIO
 import operator
-import json
 import argparse
+import json
 import math
 from prompt import prompt_scai
 from post_process import parse_math_answer, remove_not, cal_not,parse_not
-from wolframclient.evaluation import WolframLanguageSession
-from wolframclient.language import wl, wlexpr
 openai.api_key = os.getenv("OPENAI_API_KEY")
-
-def tool_ms(sys, problem, problem_eg, exp_eg, answer_eg, unit_eg, tool, lan, num_shot):
-    print(num_shot)
+def zero(sys, problem, stage=1, exp=""):
     if sys !="":
         
         messages=[{"role": "system", "content": sys}]
     else:
         messages=[]
-    for idx in range(num_shot):
-        question_input = "Problem {}.   ".format(idx + 1) + problem_eg[idx] + "\n"
-        question_output = "Explanation for Problem {}:   ".format(idx + 1) + exp_eg[idx] + "\n" + "{} language for Problem {}: ```".format(lan, idx+1)+tool[idx]+"``` \n The answer is \\boxed{"+ answer_eg[idx]+"} "+unit_eg[idx]
-        
-        messages += [
-                {"role": "user", "content": question_input},
-                {"role": "assistant", "content": question_output},
-            ]
-    test_question= "Problem {}.   ".format(len(problem_eg) + 1) + problem + "\n" 
+    test_question= "Q: " + problem + "\n" + "A: The answer is"
     messages+=[
             {"role": "user", "content": test_question}
           ]
     return messages
-def get_langueg(subj, lan):
-    output_lan=[]
-    for i in range(4):
-        with open("../dataset/original/{}/{}_{}.txt".format(lan,subj,i)) as f:
-            output_lan.append(f.read())
-
-    return output_lan
-def call_engine(messages, engine,temperature=0,n=1, patience=1000000000, sleep_time=0):
+    
+def call_engine(messages, engine,temperature=0,n=1, patience=100000, sleep_time=0):
     while patience > 0:
         patience -= 1
         try:
@@ -62,33 +41,10 @@ def call_engine(messages, engine,temperature=0,n=1, patience=1000000000, sleep_t
             if sleep_time > 0:
                 time.sleep(sleep_time)
     return ""
-def extract_lan(output, lan, session):
-    idx=output.find('```')
-    output=output[idx+3:]
-    idx=output.find('```')
-    output=output[:idx]
-    if lan=='python':
-        old_stdout = sys.stdout
-        redirected_output = sys.stdout = StringIO()
-        try:
-            exec(output)
-            sys.stdout = old_stdout
-            ans=redirected_output.getvalue().strip()
-        except:
-            print('fail')
-            return "None"
-    else:
-        try:
-            output="N[{}]".format(output)
-            ans=session.evaluate(wlexpr(output))
-        except:
-            return "None"
-    return ans
+
 def equiv(model_output, answer, unit):
-    
+    model_output=model_output.replace(',', '')
     try:
-        # model_output=model_output.replace(',', '')
-        model_output=str(model_output)
         ans=float(answer.strip())
         if ans >=1:
             first=math.isclose(float(model_output.strip()), ans, abs_tol=0.1)
@@ -109,53 +65,24 @@ def equiv(model_output, answer, unit):
     return False
 
 
-
-def get_eg(file):
-    count=0
-    problem=[]
-    exp=[]
-    answer=[]
-    unit=[]
-    with open("../dataset/original/{}_sol.json".format(file), encoding='utf-8') as json_file:
-        problems=json.load(json_file)
-        for problem_data in problems:
-                count+=1
-                if count>5:
-                    break
-                problem_text=problem_data["problem_text"]+" The unit of the answer is "+problem_data["unit"]+"."
-                problem.append(problem_text)
-                exp.append(problem_data["solution"])
-                answer.append(problem_data["answer_number"])
-                unit.append(problem_data["unit"])
-    return problem, exp, answer,unit
-def run(file, engine, start_n, Cot, tool):
+def run(file, engine, start_n, sys):
     outputs = []
     answers = []
     types = []
+    list_equiv = []
     model_outputs=[]
     ls_dict=[]
-    list_equiv=[]
 
     correct = 0
     total = 0
     count=0
-    problem_eg, exp_eg, answer_eg,unit_eg = get_eg(file)
-    cot_name=""
-    session=''
-
-    sys_prompt=prompt_scai.sys_tool_python
-    if tool=="python":
-        sys_prompt=prompt_scai.sys_tool_python
+    sys_name=""
+    if sys: 
+        sys_prompt=prompt_scai.sys_cal_box2
+        sys_name=""
     else:
-        session = WolframLanguageSession('/Applications/Mathematica.app/Contents/MacOS/WolframKernel')
-        print(session)
-        sys_prompt=prompt_scai.sys_tool_wolfram
-
-    list_lan=get_langueg(file, tool)
-    if file=="thermo":
-        num_shot=3
-    else:
-        num_shot=4
+        sys_prompt=""
+        sys_name="_nosys"
     with open("../dataset/original/{}.json".format(file), encoding='utf-8') as json_file:
         problems=json.load(json_file)
         for problem_data in problems:
@@ -163,22 +90,23 @@ def run(file, engine, start_n, Cot, tool):
                 if count<=start_n:
                     continue
                 prob_book = problem_data["source"]
+                
                 unit_prob=problem_data["unit"]
                 if remove_not(problem_data["unit"]):
                     unit_prob=remove_not(problem_data["unit"])
                 problem_text=problem_data["problem_text"]+" The unit of the answer is "+unit_prob+"."
-                message=tool_ms(sys_prompt, problem_text, problem_eg, exp_eg, answer_eg,unit_eg, list_lan,tool, num_shot)
+                message=zero(sys_prompt, problem_text)
                 model_output_ori=call_engine(message, engine=engine)
                 
-                print(message, model_output_ori)    
-                model_output = extract_lan(model_output_ori, tool, session)
+                model_output = parse_math_answer(model_output_ori)
                 answer = problem_data["answer_number"]
                 if unit_prob!=problem_data["unit"]:
-                    # model_output=cal_not(parse_not(model_output))
+                    model_output=cal_not(parse_not(model_output))
                     answer=cal_not((answer, problem_data["unit"]))
 
                 types.append(prob_book)
-                outputs.append(str(model_output))
+                outputs.append(model_output)
+                
                 answers.append(answer+"@@"+problem_data["unit"])
                 model_outputs.append(model_output_ori)
 
@@ -188,7 +116,6 @@ def run(file, engine, start_n, Cot, tool):
                 print(answer )
                 print(problem_data["unit"])
                 print("--------------------------------------------")
-                res_equiv = equiv(model_output, answer, problem_data["unit"])
                 try:
                     res_equiv = equiv(model_output, answer, problem_data["unit"])
                 except:
@@ -200,11 +127,11 @@ def run(file, engine, start_n, Cot, tool):
                 print(str(correct) + "/" + str(total))
                 list_equiv.append(res_equiv)
                 ls_dict.append({'correct': res_equiv, 'gpt solution': model_output_ori, "correct answer": answer+"@@"+problem_data["unit"],
-                               "gpt answer": str(model_output), "source book": prob_book})
+                               "gpt answer": model_output, "source book": prob_book})
                 if total % 1==0:
-                    with open("./output_{}/{}_dict_{}_{}_{}.json".format(tool, engine, tool, start_n,file), 'w') as fout:
+                    with open("./output_zero{}/{}_dict_{}_{}_{}.json".format(sys_name, engine, sys_name, start_n,file), 'w') as fout:
                         json.dump(ls_dict, fout)
-                    with open("./output_{}/{}_{}_{}_{}.txt".format(tool, engine,tool, start_n,file), "w+") as f:
+                    with open("./output_zero{}/{}_{}_{}_{}.txt".format(sys_name, engine,sys_name, start_n,file), "w+") as f:
                         for k, (output, answer, correctness, model_output) in enumerate(zip(outputs, answers, list_equiv, model_outputs)):
                             f.write("\n{} Correct: {} | OUTPUT: {} | ANSWER: {} | gpt: {}\n".format(k, correctness, output, answer, model_output))
 
@@ -213,21 +140,17 @@ def run(file, engine, start_n, Cot, tool):
                         f.write("#####################\n")
                         print("Overall Accuracy = {}/{} = {:.3f}".format(correct, total, correct/total))
                         f.write("Overall Accuracy = {}/{} = {:.3f}\n".format(correct, total, correct/total))
-    if tool=="wolfram":
-        session.terminate()
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--engine', type=str, default='gpt-4')
-    parser.add_argument('--tool', type=str, default='wolfram')
-    parser.add_argument('--Cot', action='store_true')
-    parser.add_argument('--start_num', type=int, default=0)     
+    parser.add_argument('--sys', action='store_true')
+    parser.add_argument('--start_num', type=int, default=0)   
     parser.add_argument('--list_source', nargs='+', default=["atkins", "calculus","chemmc","class","diff","fund","matter","quan","stat","thermo"])
     args = parser.parse_args()
     return args
 
 if __name__ == "__main__":
     args = parse_args()
-    
     for source in args.list_source:
-        run(source,args.engine, args.start_num, args.Cot, args.tool)
-    
+        run(source,args.engine, args.start_num, args.sys)
